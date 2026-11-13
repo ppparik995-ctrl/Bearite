@@ -1,0 +1,40 @@
+name: Build SBA Inspector
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "sdk/mods/sba-inspector/**"
+      - ".github/workflows/build-sba-inspector.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build .so
+        run: |
+          cmake -S sdk/mods/sba-inspector -B build-sba-inspector \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-sba-inspector
+
+      - name: Package zip
+        run: |
+          mkdir -p out/libs/arm64-v8a
+          cp sdk/mods/sba-inspector/mod.json out/
+          if [ -f sdk/mods/sba-inspector/icon.png ]; then cp sdk/mods/sba-inspector/icon.png out/; fi
+          cp build-sba-inspector/libsbainspector.so out/libs/arm64-v8a/
+          cd out
+          zip -r ../sba-inspector.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sba-inspector
+          path: sba-inspector.zip
+          
