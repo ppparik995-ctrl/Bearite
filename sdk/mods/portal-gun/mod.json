@@ -1,7 +1,7 @@
 {
   "id": "portal-gun",
   "name": "Portal Gun",
-  "version": "0.1",
+  "version": "0.2",
   "author": "я",
   "description": "Две точки-портала и мгновенный прыжок между ними. Кнопки A, B и стрелка на экране.",
   "libs": ["libs/arm64-v8a/libportalgun.so"],
