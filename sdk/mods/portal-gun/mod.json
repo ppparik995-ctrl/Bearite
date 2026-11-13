@@ -1,0 +1,19 @@
+{
+  "id": "portal-gun",
+  "name": "Portal Gun",
+  "version": "0.1",
+  "author": "я",
+  "description": "Две точки-портала и мгновенный прыжок между ними. Кнопки A, B и стрелка на экране.",
+  "libs": ["libs/arm64-v8a/libportalgun.so"],
+  "settings": [
+    { "id": "set_a", "type": "bool", "name": "Портал A", "description": "Каждое нажатие запоминает место, где стоит медведь, как точку A", "default": false },
+    { "id": "set_b", "type": "bool", "name": "Портал B", "description": "Каждое нажатие запоминает место, где стоит медведь, как точку B", "default": false },
+    { "id": "go", "type": "bool", "name": "Прыжок", "description": "Каждое нажатие переносит в другую точку (из A в B или из B в A)", "default": false },
+    { "id": "lift", "type": "float", "name": "Подъём при выходе", "description": "На сколько метров выше точки появляется медведь, чтобы не застрять в земле", "min": 0, "max": 2, "default": 0.3, "control": "slider" }
+  ],
+  "hud": [
+    { "label": "A", "setting": "set_a", "action": "toggle", "pos": "left" },
+    { "label": "B", "setting": "set_b", "action": "toggle", "pos": "left" },
+    { "label": "→", "setting": "go", "action": "toggle", "pos": "left" }
+  ]
+}
