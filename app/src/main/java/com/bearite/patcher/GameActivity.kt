@@ -332,7 +332,7 @@ class GameActivity : Activity() {
             // нажатие на «Достижения» в паузе: открываем своё окно со списком
             val a = try { File(File(filesDir, "maps"), "_achclick").readText().trim() } catch (_: Throwable) { "" }
             if (lastAch == null) lastAch = a
-            else if (a != lastAch) { lastAch = a; try { AchievementsWindow(this, GameUi(this)).show() } catch (t: Throwable) { BLog.e("окно достижений", t) } }
+            else if (a != lastAch) { lastAch = a; try { AchievementsWindow(this@GameActivity, GameUi(this@GameActivity)).show() } catch (t: Throwable) { BLog.e("окно достижений", t) } }
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(this, 150)
         }
     }
