@@ -1,0 +1,34 @@
+{
+  "id": "emote-maker",
+  "name": "Редактор эмоций",
+  "version": "0.1",
+  "author": "я",
+  "description": "Создавай свои эмоции: двигай части тела медведя, сохраняй кадры, проигрывай анимацию и записывай в файл. Другие игроки её не видят.",
+  "libs": ["libs/arm64-v8a/libemotemaker.so"],
+  "settings": [
+    { "id": "edit", "type": "bool", "name": "Режим правки", "description": "Включает правку: обычная анимация медведя отключается, и позу можно менять. Выключи, чтобы вернуть обычную анимацию", "default": false },
+    { "id": "bone", "type": "float", "name": "Кость", "description": "0 тело, 1 голова, 2 рука левая, 3 рука правая, 4 нога левая, 5 нога правая, 6 Шика тело, 7 Шика голова, 8 Шика рука левая, 9 Шика рука правая, 10 Шика нога левая, 11 Шика нога правая. Выбранная часть на секунду увеличится", "min": 0, "max": 11, "default": 0, "control": "slider" },
+    { "id": "px", "type": "float", "name": "Сдвиг по X", "description": "Сдвиг выбранной кости влево и вправо", "min": -1, "max": 1, "default": 0, "control": "slider" },
+    { "id": "py", "type": "float", "name": "Сдвиг по Y", "description": "Сдвиг выбранной кости вверх и вниз", "min": -1, "max": 1, "default": 0, "control": "slider" },
+    { "id": "pz", "type": "float", "name": "Сдвиг по Z", "description": "Сдвиг выбранной кости вперёд и назад", "min": -1, "max": 1, "default": 0, "control": "slider" },
+    { "id": "rx", "type": "float", "name": "Поворот по X", "description": "Поворот выбранной кости вокруг оси X, в градусах", "min": -180, "max": 180, "default": 0, "control": "slider" },
+    { "id": "ry", "type": "float", "name": "Поворот по Y", "description": "Поворот выбранной кости вокруг оси Y, в градусах", "min": -180, "max": 180, "default": 0, "control": "slider" },
+    { "id": "rz", "type": "float", "name": "Поворот по Z", "description": "Поворот выбранной кости вокруг оси Z, в градусах", "min": -180, "max": 180, "default": 0, "control": "slider" },
+    { "id": "frame", "type": "bool", "name": "Сохранить кадр", "description": "Каждое нажатие запоминает текущую позу всех костей как новый кадр (до 24)", "default": false },
+    { "id": "del", "type": "bool", "name": "Удалить последний кадр", "description": "Каждое нажатие убирает последний сохранённый кадр", "default": false },
+    { "id": "play", "type": "bool", "name": "Проиграть", "description": "Включает проигрывание сохранённых кадров (нужно минимум два)", "default": false },
+    { "id": "loop", "type": "bool", "name": "Зациклить", "description": "Повторять анимацию по кругу, от последнего кадра снова к первому", "default": true },
+    { "id": "frame_sec", "type": "float", "name": "Секунд между кадрами", "description": "За сколько секунд поза переходит от одного кадра к следующему", "min": 0.1, "max": 3, "default": 0.5, "control": "slider" },
+    { "id": "slot", "type": "float", "name": "Слот файла", "description": "Номер ячейки от 1 до 5 для сохранения и загрузки эмоции", "min": 1, "max": 5, "default": 1, "control": "slider" },
+    { "id": "save", "type": "bool", "name": "Записать в файл", "description": "Каждое нажатие сохраняет все кадры в выбранный слот", "default": false },
+    { "id": "load", "type": "bool", "name": "Загрузить из файла", "description": "Каждое нажатие загружает кадры из выбранного слота", "default": false }
+  ],
+  "hud": [
+    { "label": "Ред", "setting": "edit", "action": "toggle", "pos": "left" },
+    { "label": "Кадр", "setting": "frame", "action": "toggle", "pos": "left" },
+    { "label": "✖", "setting": "del", "action": "toggle", "pos": "left" },
+    { "label": "Игра", "setting": "play", "action": "toggle", "pos": "right" },
+    { "label": "Сохр", "setting": "save", "action": "toggle", "pos": "right" },
+    { "label": "Загр", "setting": "load", "action": "toggle", "pos": "right" }
+  ]
+}
