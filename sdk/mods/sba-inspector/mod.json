@@ -1,14 +1,14 @@
 {
   "id": "sba-inspector",
   "name": "Разведка эмоций",
-  "version": "0.1",
+  "version": "0.2",
   "author": "я",
-  "description": "Пишет в Лог поля и методы классов эмоций медведя. Нужен, чтобы сделать мод анимаций.",
+  "description": "Пишет в Лог кости медведя и поля BearTransformReferences. Нужен, чтобы сделать редактор эмоций.",
   "libs": ["libs/arm64-v8a/libsbainspector.so"],
   "settings": [
-    { "id": "dump", "type": "bool", "name": "Записать в лог ещё раз", "description": "Переключи, и список классов запишется в Лог заново", "default": false }
+    { "id": "dump", "type": "bool", "name": "Записать в лог ещё раз", "description": "Переключи, и кости медведя запишутся в Лог заново", "default": false }
   ],
   "hud": [
-    { "label": "Лог", "setting": "dump", "action": "toggle", "pos": "left" }
+    { "label": "Кости", "setting": "dump", "action": "toggle", "pos": "left" }
   ]
 }
