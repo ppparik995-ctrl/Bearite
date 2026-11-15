@@ -1,0 +1,19 @@
+{
+  "id": "ragdoll",
+  "name": "Рэгдолл",
+  "version": "0.1",
+  "author": "я",
+  "description": "В воздухе медведь обмякает как тряпичная кукла. Пока он обмякший, ходит медленно. Встать можно только нажатием прыжка (сам прыжок при этом не происходит).",
+  "libs": ["libs/arm64-v8a/libragdoll.so"],
+  "settings": [
+    { "id": "enable", "type": "bool", "name": "Рэгдолл включён", "description": "Главный выключатель мода", "default": true },
+    { "id": "speed_limit", "type": "float", "name": "Скорость в рэгдолле", "description": "Наибольшая скорость ходьбы по земле, пока медведь обмякший (метров в секунду)", "min": 0.5, "max": 10, "default": 3, "control": "slider" },
+    { "id": "air_delay", "type": "float", "name": "Задержка в воздухе, секунд", "description": "Сколько медведь должен пробыть в воздухе, чтобы обмякнуть (чтобы не обмякать на ступеньках)", "min": 0, "max": 0.5, "default": 0.1, "control": "slider" },
+    { "id": "floppy", "type": "float", "name": "Мягкость конечностей", "description": "Чем больше, тем сильнее болтаются руки, ноги и голова", "min": 0.2, "max": 2, "default": 1, "control": "slider" },
+    { "id": "tilt", "type": "float", "name": "Наклон лёжа, градусов", "description": "Насколько медведь заваливается, когда лежит на земле. Минус наклоняет в другую сторону", "min": -90, "max": 90, "default": 75, "control": "slider" },
+    { "id": "getup_sec", "type": "float", "name": "Время вставания, секунд", "description": "За сколько секунд медведь поднимается после нажатия прыжка", "min": 0.1, "max": 1, "default": 0.35, "control": "slider" }
+  ],
+  "hud": [
+    { "label": "Рэг", "setting": "enable", "action": "toggle", "pos": "left" }
+  ]
+}
