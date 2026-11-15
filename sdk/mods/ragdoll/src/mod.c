@@ -448,4 +448,65 @@ void bearite_mod_init(const BeariteApi* api, const char* mod_id) {
 
     il2_object_get_class = (void* (*)(void*))api->il2cpp_symbol("il2cpp_object_get_class");
     il2_class_get_field = (void* (*)(void*, const char*))api->il2cpp_symbol("il2cpp_class_get_field_from_name");
-    il2_field_get_value = (void (*)(void*, void*, void*))api->il2cpp
+    il2_field_get_value = (void (*)(void*, void*, void*))api->il2cpp_symbol("il2cpp_field_get_value");
+    il2_string_new = (void* (*)(const char*))api->il2cpp_symbol("il2cpp_string_new");
+    il2_type_get_type = (int (*)(void*))api->il2cpp_symbol("il2cpp_type_get_type");
+    c_get_name = (const char* (*)(void*))api->il2cpp_symbol("il2cpp_class_get_name");
+    c_get_methods = (void* (*)(void*, void**))api->il2cpp_symbol("il2cpp_class_get_methods");
+    m_get_name_fn = (const char* (*)(void*))api->il2cpp_symbol("il2cpp_method_get_name");
+    m_param_count = (uint32_t (*)(void*))api->il2cpp_symbol("il2cpp_method_get_param_count");
+    m_param = (void* (*)(void*, uint32_t))api->il2cpp_symbol("il2cpp_method_get_param");
+    m_ret = (void* (*)(void*))api->il2cpp_symbol("il2cpp_method_get_return_type");
+    t_get_name = (char* (*)(void*))api->il2cpp_symbol("il2cpp_type_get_name");
+
+    m_find = find_m("UnityEngine", "Transform", "Find", 1);
+    m_get_lpos = find_m("UnityEngine", "Transform", "get_localPosition", 0);
+    m_set_lpos = find_m("UnityEngine", "Transform", "set_localPosition", 1);
+    m_get_lrot = find_m("UnityEngine", "Transform", "get_localRotation", 0);
+    m_set_lrot = find_m("UnityEngine", "Transform", "set_localRotation", 1);
+    m_get_pos = find_m("UnityEngine", "Transform", "get_position", 0);
+    m_inv_dir = find_m("UnityEngine", "Transform", "InverseTransformDirection", 1);
+    m_set_enabled = find_m("UnityEngine", "Behaviour", "set_enabled", 1);
+    m_get_transform = find_m("UnityEngine", "Component", "get_transform", 0);
+    m_alive = find_m("UnityEngine", "Object", "op_Implicit", 1);
+    m_is_local = find_m("", "PlayerBearController", "get_IsLocalPlayer", 0);
+    if (!m_is_local.code) m_is_local = find_m("", "PlayerBearController", "IsLocalPlayer", 0);
+    m_is_grounded = find_m("", "PlayerBearController", "IsGrounded", 0);
+    m_is_swim = find_m("", "PlayerBearController", "IsSwimmingUnderwater", 0);
+    m_in_vehicle = find_m("", "PlayerBearController", "IsInVehicle", 0);
+    m_shallow = find_m("", "PlayerBearController", "IsWalkingInShallowWater", 0);
+    m_knocked = find_m("", "PlayerBearController", "IsKnocked", 0);
+    m_pt_water = find_m("", "PlayerBearController", "IsPointInPlayerWaterBounds", 1);
+    m_get_state = find_m("", "PlayerBearController", "GetPlayerState", 0);
+
+    if (m_get_state.code && m_ret && t_get_name && il2_type_get_type) {
+        void* rt = m_ret(m_get_state.mi);
+        int code = rt ? il2_type_get_type(rt) : 0;
+        char* tn = rt ? t_get_name(rt) : NULL;
+        g_state_is_class = (code == 0x12); /* IL2CPP_TYPE_CLASS */
+        char b[240];
+        snprintf(b, sizeof b, "Рэгдолл: GetPlayerState возвращает %s (код %d), по имени состояния %s", tn ? tn : "?", code, g_state_is_class ? "работаю" : "не работаю");
+        logmsg(b);
+    }
+    static const char* const pats[] = { "IsGrounded", "IsSwimmingUnderwater", "IsInVehicle", "GetPlayerState",
+                                        "IsPointInPlayerWaterBounds", "IsWalkingInShallowWater", "IsKnocked" };
+    dump_sigs("PlayerBearController", pats, 7);
+
+    logmsg(m_alive.code ? "Рэгдолл: проверка живости объектов есть" : "Рэгдолл: op_Implicit НЕ найден, проверки живости объектов не будет");
+    logmsg(m_pt_water.code ? "Рэгдолл: IsPointInPlayerWaterBounds найден" : "Рэгдолл: IsPointInPlayerWaterBounds НЕ найден");
+
+    int ok = m_find.code && m_get_lpos.code && m_set_lpos.code && m_get_lrot.code && m_set_lrot.code &&
+             m_get_pos.code && m_set_enabled.code && m_get_transform.code && m_is_grounded.code && il2_string_new;
+    logmsg(ok ? "Рэгдолл: все нужные методы найдены" : "Рэгдолл: НЕ все нужные методы найдены, пришли лог");
+    if (!m_inv_dir.code) logmsg("Рэгдолл: InverseTransformDirection не найден, гравитация конечностей будет упрощённой");
+    if (!ok) return;
+
+    if (bearite_hook_method(api, g_id, "", "PlayerBearController", "UpdateVelocity", 2, (void*)h_uv, (void**)&o_uv) != 0)
+        logmsg("Рэгдолл: не удалось перехватить UpdateVelocity, слабого перемещения и отмены прыжка не будет");
+    if (bearite_hook_method(api, g_id, "", "BearEmoteController", "Update", 0, (void*)h_update, (void**)&o_update) != 0) {
+        logmsg("Рэгдолл: не удалось перехватить BearEmoteController.Update (выключи «Редактор эмоций», «Студию эмоций» и «Разведку эмоций»)");
+        return;
+    }
+    logmsg("Рэгдолл 0.2: готов. Упади с высоты, и медведь обмякнет; встать можно прыжком");
+}
+        
