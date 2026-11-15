@@ -1,0 +1,40 @@
+name: Build Ragdoll
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "sdk/mods/ragdoll/**"
+      - ".github/workflows/build-ragdoll.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build .so
+        run: |
+          cmake -S sdk/mods/ragdoll -B build-ragdoll \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-ragdoll
+
+      - name: Package zip
+        run: |
+          mkdir -p out/libs/arm64-v8a
+          cp sdk/mods/ragdoll/mod.json out/
+          if [ -f sdk/mods/ragdoll/icon.png ]; then cp sdk/mods/ragdoll/icon.png out/; fi
+          cp build-ragdoll/*.so out/libs/arm64-v8a/
+          cd out
+          zip -r ../ragdoll.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ragdoll
+          path: ragdoll.zip
+          
