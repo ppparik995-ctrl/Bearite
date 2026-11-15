@@ -442,4 +442,4 @@ void bearite_mod_init(const BeariteApi* api, const char* mod_id) {
         logmsg("Рэгдолл: не удалось перехватить UpdateVelocity, слабого перемещения не будет");
     hook_bool("IsJumpInputPressed", (void*)h_jp, (void**)&o_jp);
     hook_bool("IsJumpInputPressedOrBuffered", (void*)h_jpb, (void**)&o_jpb);
-    
+}
