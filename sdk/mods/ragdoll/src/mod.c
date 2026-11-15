@@ -1,25 +1,33 @@
 /*
- * Рэгдолл, версия 0.1 (мод Bearite, API версии 1) для Super Bear Adventure.
+ * Рэгдолл, версия 0.2 (мод Bearite, API версии 1) для Super Bear Adventure.
  *
  * Что делает:
- *  1) Пока медведь в воздухе (IsGrounded() == false дольше air_delay), он «обмякает»:
- *     родная анимация отключается, руки, ноги и голова болтаются на пружинках, корпус наклоняется.
+ *  1) Пока медведь в воздухе (IsGrounded() == false или быстрое падение дольше air_delay),
+ *     он «обмякает»: родная анимация отключается, руки, ноги и голова болтаются на пружинках.
  *  2) Пока медведь обмякший, горизонтальная скорость ограничена (слабое перемещение).
- *  3) На земле обмякший медведь лежит, пока не нажат прыжок. Нажатие прыжка только поднимает
- *     его (сам прыжок «съедается»), потом 0.3 секунды прыжок заблокирован, чтобы не подпрыгнул.
+ *  3) На земле обмякший медведь лежит, пока не нажат прыжок. Нажатие прыжка только поднимает его:
+ *     толчок вверх с земли в UpdateVelocity гасится, ещё 0.3 секунды прыжок заблокирован.
  *
- * Это не настоящая физика Unity с Rigidbody, а имитация на пружинах: так надёжнее для такого скелета.
- * Другие игроки этого не видят.
+ * Что нового в 0.2 по сравнению с 0.1:
+ *  - в воде, на транспорте и в особых состояниях игрока рэгдолла нет;
+ *  - перед каждым обращением к костям проверяется, что объекты не уничтожены (иначе исключение Unity);
+ *  - время берётся из системных часов, а не из Unity (Bearite перехватывает Time.*);
+ *  - падение определяется ещё и по скорости, поэтому чит air_jump не мешает;
+ *  - убраны перехваты ввода прыжка, прыжок отменяется через скорость;
+ *  - защита от NaN, стабильный выбор «своего» медведя, подробный лог.
  *
- * Тик берём из BearEmoteController::Update (его игра зовёт каждый кадр), как в моде «Редактор эмоций»:
- * не включай их одновременно, они перехватывают один и тот же метод и правят одни и те же кости.
+ * Это имитация на пружинах, а не настоящая физика Unity с Rigidbody. Другие игроки её не видят.
+ * Тик берём из BearEmoteController::Update: не включай одновременно «Редактор эмоций»,
+ * «Студию эмоций» и «Разведку эмоций», они перехватывают тот же метод.
  *
  * Написано без проверки на устройстве. Если чего-то нет в игре, мод пишет об этом в «Лог».
  */
+#define _POSIX_C_SOURCE 199309L
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 #include "bearite_api.h"
 #include "bearite_il2cpp.h"
 
@@ -31,6 +39,8 @@ typedef struct { void* code; void* mi; } Method;
 static const char* LIMB_PATH[NL] = { "root/head", "root/hand_l", "root/hand_r", "root/foot_l", "root/foot_r" };
 
 enum { S_NORMAL = 0, S_RAG = 1, S_GETUP = 2 };
+#define JUMP_VY 4.0f     /* толчок вверх быстрее этого считаем нажатием прыжка */
+#define FALL_VY (-3.5f)  /* падение быстрее этого считаем воздухом, даже если IsGrounded врёт */
 
 static const BeariteApi* g_api = NULL;
 static const char* g_id = "ragdoll";
@@ -39,6 +49,7 @@ static void* (*il2_object_get_class)(void*);
 static void* (*il2_class_get_field)(void*, const char*);
 static void (*il2_field_get_value)(void*, void*, void*);
 static void* (*il2_string_new)(const char*);
+static int (*il2_type_get_type)(void*);
 static const char* (*c_get_name)(void*);
 static void* (*c_get_methods)(void*, void**);
 static const char* (*m_get_name_fn)(void*);
@@ -47,9 +58,10 @@ static void* (*m_param)(void*, uint32_t);
 static void* (*m_ret)(void*);
 static char* (*t_get_name)(void*);
 
-static Method m_find, m_get_lpos, m_set_lpos, m_get_lrot, m_set_lrot, m_get_pos, m_inv_dir, m_get_root;
-static Method m_set_enabled, m_get_transform, m_time;
-static Method m_is_local, m_is_grounded, m_is_swim, m_in_vehicle;
+static Method m_find, m_get_lpos, m_set_lpos, m_get_lrot, m_set_lrot, m_get_pos, m_inv_dir;
+static Method m_set_enabled, m_get_transform, m_alive;
+static Method m_is_local, m_is_grounded, m_is_swim, m_in_vehicle, m_shallow, m_knocked, m_get_state, m_pt_water;
+static int g_state_is_class = 0;
 
 /* текущий медведь */
 static void* g_owner = NULL;   /* BearEmoteController */
@@ -58,27 +70,31 @@ static void* g_anim = NULL;
 static void* g_vis = NULL;     /* Transform "root": весь видимый медведь */
 static void* g_limb[NL];
 static int g_anim_off = 0;
+static int g_calls = 0, g_owner_seen = 0;
 
 /* состояние рэгдолла */
 static int g_state = S_NORMAL;
-static float g_air_t = 0, g_getup_t = 0, g_block_until = 0, g_last_time = 0;
-static int g_grounded = 1;
+static float g_air_t = 0, g_getup_t = 0;
+static double g_block_until = 0, g_last_time = 0;
+static int g_grounded = 1;      /* с поправкой на скорость падения */
 static volatile int g_standup_req = 0;
 static int g_ready = 0;
+
+/* движение корпуса */
+static Vec3 g_last_pos, g_last_vel, g_acc;
+static float g_vy = 0;
+static int g_have_pos = 0;
 
 /* пружинки */
 static Vec3 g_rest[NL], g_d[NL], g_vd[NL];
 static Vec3 g_root_base_pos;
 static Quat g_root_base_rot;
 static float g_tilt = 0, g_wg = 0;
-static Vec3 g_last_pos, g_last_vel;
-static int g_have_pos = 0;
 
-/* нажатия прыжка */
-static void* g_inp_ptr = NULL;
-static int g_inp_local = 0;
-static int g_inp_calls = 0, g_inp_matched = 0, g_inp_warned = 0;
-static int g_warned_local = 0;
+/* лог */
+static int g_warned_local = 0, g_cheat_warned = 0, g_state_logs = 0, g_water_logs = 0, g_water_prev = -1;
+static float g_cheat_t = 0;
+static char g_last_state[64] = "";
 
 static void logmsg(const char* m) { if (g_api && g_api->log) g_api->log(g_id, m); }
 static void logint(const char* fmt, int a) { char b[240]; snprintf(b, sizeof b, fmt, a); logmsg(b); }
@@ -106,9 +122,11 @@ static void* get_field_obj(void* obj, const char* name) {
     return v;
 }
 
-static float now_time(void) {
-    if (!m_time.code) return 0.0f;
-    return ((float (*)(const void*))m_time.code)(m_time.mi);
+/* системные часы: Time.* у Bearite перехвачены, поэтому Unity-время не используем */
+static double now_time(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
 }
 
 static Vec3 lpos(void* t) { return ((Vec3 (*)(void*, const void*))m_get_lpos.code)(t, m_get_lpos.mi); }
@@ -122,17 +140,21 @@ static void* get_transform(void* comp) {
     if (!comp || !m_get_transform.code) return NULL;
     return ((void* (*)(void*, const void*))m_get_transform.code)(comp, m_get_transform.mi);
 }
-static void* root_of(void* comp) {
-    void* t = get_transform(comp);
-    if (!t || !m_get_root.code) return NULL;
-    return ((void* (*)(void*, const void*))m_get_root.code)(t, m_get_root.mi);
-}
 static int call_bool(Method m, void* self) {
     if (!m.code || !self) return 0;
     return ((uint8_t (*)(void*, const void*))m.code)(self, m.mi) != 0;
 }
+/* Объект Unity ещё жив? (UnityEngine.Object.op_Implicit). NULL считаем «нечего проверять» */
+static int alive(void* o) {
+    if (!o) return 1;
+    if (!m_alive.code) return 1;
+    return ((uint8_t (*)(void*, const void*))m_alive.code)(o, m_alive.mi) != 0;
+}
 
-/* кватернионы */
+static int finite3(Vec3 v) { return isfinite(v.x) && isfinite(v.y) && isfinite(v.z); }
+static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static float vlen(Vec3 v) { return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); }
+
 static Quat qmul(Quat a, Quat b) {
     Quat r;
     r.x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
@@ -146,17 +168,31 @@ static Quat qaxis(float ax, float ay, float az, float deg) {
     Quat q = { ax * s, ay * s, az * s, cosf(h) };
     return q;
 }
-static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
-static float vlen(Vec3 v) { return sqrtf(v.x * v.x + v.y * v.y + v.z * v.z); }
+
+/* Имя класса текущего состояния игрока (если GetPlayerState возвращает объект, а не число) */
+static const char* state_name(void* pc) {
+    if (!g_state_is_class || !m_get_state.code || !il2_object_get_class || !c_get_name) return NULL;
+    void* o = ((void* (*)(void*, const void*))m_get_state.code)(pc, m_get_state.mi);
+    if (!o) return NULL;
+    void* k = il2_object_get_class(o);
+    return k ? c_get_name(k) : NULL;
+}
+static int has(const char* s, const char* sub) { return s && strstr(s, sub) != NULL; }
+static int bad_state(const char* n) {
+    return has(n, "Swim") || has(n, "Water") || has(n, "Climb") || has(n, "Vehicle") || has(n, "Dead") ||
+           has(n, "Death") || has(n, "Hid") || has(n, "Grab") || has(n, "Knock") || has(n, "Dive") ||
+           has(n, "Cannon") || has(n, "Emote") || has(n, "Cinematic") || has(n, "Frozen") || has(n, "Ladder");
+}
 
 static void resolve(void* emote, void* pc) {
+    /* старые указатели могли устареть (смена уровня), поэтому их не трогаем */
     memset(g_limb, 0, sizeof g_limb);
     g_owner = emote;
     g_pc = pc;
     g_state = S_NORMAL;
     g_anim_off = 0;
     g_have_pos = 0;
-    g_inp_ptr = NULL;
+    g_standup_req = 0;
     g_anim = get_field_obj(emote, "animator");
     void* root = g_anim ? get_transform(g_anim) : NULL;
     g_vis = NULL;
@@ -168,7 +204,15 @@ static void resolve(void* emote, void* pc) {
         if (g_limb[i]) n++;
     }
     logint("Рэгдолл: найдено конечностей %d из 5", n);
-    if (!g_vis) logmsg("Рэгдолл: не найден корень root, наклон корпуса не будет работать");
+    if (!g_vis) logmsg("Рэгдолл: не найден корень root, наклона корпуса не будет");
+}
+
+/* Все ли нужные объекты ещё живы. Если нет, ищем кости заново и пропускаем кадр */
+static int validate(void) {
+    int ok = alive(g_anim) && alive(g_vis);
+    for (int i = 0; i < NL && ok; ++i) ok = alive(g_limb[i]);
+    if (!ok) { logmsg("Рэгдолл: объекты медведя уничтожены, ищу заново"); resolve(g_owner, g_pc); return 0; }
+    return 1;
 }
 
 static void set_anim(int off) {
@@ -177,6 +221,12 @@ static void set_anim(int off) {
         ((void (*)(void*, uint8_t, const void*))m_set_enabled.code)(g_anim, off ? 0 : 1, m_set_enabled.mi);
         g_anim_off = off;
     }
+}
+
+static int can_ragdoll(void) {
+    if (g_vis) return 1;
+    for (int i = 0; i < NL; ++i) if (g_limb[i]) return 1;
+    return 0;
 }
 
 static void enter_rag(void) {
@@ -192,11 +242,35 @@ static void enter_rag(void) {
 }
 
 static void leave_all(void) {
-    for (int i = 0; i < NL; ++i) if (g_limb[i]) set_lpos(g_limb[i], g_rest[i]);
-    if (g_vis) { set_lpos(g_vis, g_root_base_pos); set_lrot(g_vis, g_root_base_rot); }
-    set_anim(0);
+    if (validate()) {
+        for (int i = 0; i < NL; ++i) if (g_limb[i]) set_lpos(g_limb[i], g_rest[i]);
+        if (g_vis) { set_lpos(g_vis, g_root_base_pos); set_lrot(g_vis, g_root_base_rot); }
+        set_anim(0);
+    }
     g_state = S_NORMAL;
     g_air_t = 0;
+}
+
+/* Скорость и ускорение корпуса по смещению. Возвращает 0, если был телепорт или возрождение */
+static int update_motion(float dt) {
+    if (!g_vis) return 1;
+    Vec3 p = wpos(g_vis);
+    if (!finite3(p)) return 1;
+    int ok = 1;
+    if (g_have_pos && dt > 0.0001f) {
+        Vec3 d = { p.x - g_last_pos.x, p.y - g_last_pos.y, p.z - g_last_pos.z };
+        if (vlen(d) > 6.0f) { ok = 0; g_have_pos = 0; memset(&g_last_vel, 0, sizeof g_last_vel); memset(&g_acc, 0, sizeof g_acc); g_vy = 0; }
+        else {
+            Vec3 v = { d.x / dt, d.y / dt, d.z / dt };
+            Vec3 a = { (v.x - g_last_vel.x) / dt, (v.y - g_last_vel.y) / dt, (v.z - g_last_vel.z) / dt };
+            float al = vlen(a);
+            if (al > 60.0f) { float s = 60.0f / al; a.x *= s; a.y *= s; a.z *= s; }
+            g_last_vel = v; g_acc = a; g_vy = v.y;
+        }
+    } else { memset(&g_last_vel, 0, sizeof g_last_vel); memset(&g_acc, 0, sizeof g_acc); g_vy = 0; }
+    g_last_pos = p;
+    g_have_pos = ok ? 1 : 0;
+    return ok;
 }
 
 /* Один шаг имитации; w = 1 полностью обмякший, 0 в норме (при вставании плавно убывает) */
@@ -207,25 +281,11 @@ static void simulate(float dt, float w) {
     if (dt > 0.033f) dt = 0.033f;
     if (dt < 0.0001f) return;
 
-    /* скорость и ускорение корпуса в мире */
-    Vec3 acc = {0, 0, 0};
-    float vy = 0;
-    if (g_vis) {
-        Vec3 p = wpos(g_vis);
-        if (g_have_pos) {
-            Vec3 v = { (p.x - g_last_pos.x) / dt, (p.y - g_last_pos.y) / dt, (p.z - g_last_pos.z) / dt };
-            acc.x = (v.x - g_last_vel.x) / dt; acc.y = (v.y - g_last_vel.y) / dt; acc.z = (v.z - g_last_vel.z) / dt;
-            float al = vlen(acc);
-            if (al > 60.0f) { float s = 60.0f / al; acc.x *= s; acc.y *= s; acc.z *= s; }
-            g_last_vel = v;
-            vy = v.y;
-        } else { memset(&g_last_vel, 0, sizeof g_last_vel); }
-        g_last_pos = p;
-        g_have_pos = 1;
-    }
     Vec3 gdir = {0, -1, 0};
-    Vec3 acc_l = acc;
-    if (g_vis && m_inv_dir.code) { gdir = inv_dir(g_vis, gdir); acc_l = inv_dir(g_vis, acc); }
+    Vec3 acc_l = g_acc;
+    if (g_vis && m_inv_dir.code) { gdir = inv_dir(g_vis, gdir); acc_l = inv_dir(g_vis, g_acc); }
+    if (!finite3(gdir)) { gdir.x = 0; gdir.y = -1; gdir.z = 0; }
+    if (!finite3(acc_l)) memset(&acc_l, 0, sizeof acc_l);
 
     float k = 60.0f / floppy, c = 5.5f;
     float droop = 0.12f * floppy;
@@ -239,53 +299,66 @@ static void simulate(float dt, float w) {
         a.z = -k * g_d[i].z - c * g_vd[i].z + k * droop * gdir.z - 0.5f * floppy * acc_l.z;
         g_vd[i].x += a.x * dt; g_vd[i].y += a.y * dt; g_vd[i].z += a.z * dt;
         g_d[i].x += g_vd[i].x * dt; g_d[i].y += g_vd[i].y * dt; g_d[i].z += g_vd[i].z * dt;
+        if (!finite3(g_d[i]) || !finite3(g_vd[i])) { memset(&g_d[i], 0, sizeof(Vec3)); memset(&g_vd[i], 0, sizeof(Vec3)); }
         float dl = vlen(g_d[i]);
         if (dl > 0.45f) { float s = 0.45f / dl; g_d[i].x *= s; g_d[i].y *= s; g_d[i].z *= s; }
         /* на земле руки и ноги раскидываются в стороны */
         float side = g_rest[i].x >= 0 ? 1.0f : -1.0f;
-        Vec3 sprawl = { side * 0.22f * g_wg, 0, 0 };
-        if (i == 0) memset(&sprawl, 0, sizeof sprawl);
-        Vec3 p = { g_rest[i].x + (g_d[i].x + sprawl.x) * w, g_rest[i].y + (g_d[i].y + sprawl.y) * w,
-                   g_rest[i].z + (g_d[i].z + sprawl.z) * w };
+        float sx = (i == 0) ? 0.0f : side * 0.22f * g_wg;
+        Vec3 p = { g_rest[i].x + (g_d[i].x + sx) * w, g_rest[i].y + g_d[i].y * w, g_rest[i].z + g_d[i].z * w };
         set_lpos(g_limb[i], p);
     }
 
     /* наклон корпуса: на земле заваливается, в воздухе кувыркается по скорости падения */
     if (g_vis) {
-        float target = g_grounded ? tilt_set : clampf(-vy * 4.0f, -45.0f, 45.0f);
+        float target = g_grounded ? tilt_set : clampf(-g_vy * 4.0f, -45.0f, 45.0f);
+        if (!isfinite(g_tilt)) g_tilt = 0;
         g_tilt += (target - g_tilt) * clampf(dt * 6.0f, 0, 1);
         set_lrot(g_vis, qmul(g_root_base_rot, qaxis(1, 0, 0, g_tilt * w)));
     }
 }
 
 static void tick(void* emote, void* pc) {
-    if (emote != g_owner || pc != g_pc) resolve(emote, pc);
-    float now = now_time();
-    float dt = now - g_last_time;
+    if (emote != g_owner) resolve(emote, pc);
+    g_pc = pc;
+    double now = now_time();
+    float dt = (float)(now - g_last_time);
     g_last_time = now;
-    if (dt < 0 || dt > 0.5f) dt = 0;
+    if (dt < 0 || dt > 0.2f) dt = 0;
 
     if (!g_api->get_bool(g_id, "enable", 1)) { if (g_state != S_NORMAL) leave_all(); g_ready = 0; return; }
     g_ready = 1;
+    if (dt <= 0) return;
+    if (!validate()) return;
+    if (!update_motion(dt)) { if (g_state != S_NORMAL) leave_all(); g_standup_req = 0; return; }
 
-    g_grounded = call_bool(m_is_grounded, pc);
-    int busy = call_bool(m_is_swim, pc) || call_bool(m_in_vehicle, pc);
+    int raw = call_bool(m_is_grounded, pc);
+    g_grounded = raw && g_vy > FALL_VY;
+    /* IsGrounded всегда «да», хотя медведь падает: скорее всего включён чит air_jump */
+    if (raw && g_vy < -6.0f) { g_cheat_t += dt; if (g_cheat_t > 0.3f && !g_cheat_warned) { g_cheat_warned = 1; logmsg("Рэгдолл: IsGrounded говорит «на земле» при падении, выключи чит air_jump"); } }
+    else g_cheat_t = 0;
 
-    /* телепорт или возрождение: сбрасываем рэгдолл */
-    if (g_vis && g_have_pos) {
-        Vec3 p = wpos(g_vis);
-        Vec3 d = { p.x - g_last_pos.x, p.y - g_last_pos.y, p.z - g_last_pos.z };
-        if (vlen(d) > 6.0f) { if (g_state != S_NORMAL) leave_all(); g_have_pos = 0; g_standup_req = 0; return; }
+    const char* sname = state_name(pc);
+    if (sname && strcmp(sname, g_last_state) != 0 && g_state_logs < 60) {
+        g_state_logs++;
+        snprintf(g_last_state, sizeof g_last_state, "%s", sname);
+        logs3("Рэгдолл: состояние игрока: %s", sname, NULL, NULL);
     }
+    int water = 0;
+    if (m_pt_water.code && g_have_pos && g_api->get_bool(g_id, "water_check", 1))
+        water = ((uint8_t (*)(void*, Vec3, const void*))m_pt_water.code)(pc, g_last_pos, m_pt_water.mi) != 0;
+    if (water != g_water_prev && g_water_logs < 30) { g_water_logs++; g_water_prev = water; logmsg(water ? "Рэгдолл: медведь в воде" : "Рэгдолл: медведь вне воды"); }
+    int busy = water || call_bool(m_is_swim, pc) || call_bool(m_in_vehicle, pc) || call_bool(m_shallow, pc) ||
+               call_bool(m_knocked, pc) || bad_state(sname);
 
     if (g_state == S_NORMAL) {
         if (!g_grounded && !busy) g_air_t += dt; else g_air_t = 0;
         float need = (float)g_api->get_float(g_id, "air_delay", 0.1);
-        if (g_air_t >= need && g_air_t > 0) { enter_rag(); logmsg("Рэгдолл: обмяк"); }
+        if (g_air_t >= need && g_air_t > 0 && can_ragdoll()) { enter_rag(); logmsg("Рэгдолл: обмяк"); }
         return;
     }
     if (g_state == S_RAG) {
-        if (busy) { g_standup_req = 0; g_state = S_GETUP; g_getup_t = 0; }
+        if (busy) { g_standup_req = 0; g_state = S_GETUP; g_getup_t = 0; logmsg("Рэгдолл: особое состояние, встаю"); }
         else if (g_standup_req && g_grounded) { g_standup_req = 0; g_state = S_GETUP; g_getup_t = 0; logmsg("Рэгдолл: встаёт"); }
         else if (!g_grounded) g_standup_req = 0;
         simulate(dt, 1.0f);
@@ -297,57 +370,32 @@ static void tick(void* emote, void* pc) {
     g_getup_t += dt;
     if (!g_grounded && !busy) { g_state = S_RAG; return; }
     float w = 1.0f - g_getup_t / dur;
-    if (w <= 0) { leave_all(); g_block_until = now + 0.3f; return; }
+    if (w <= 0 || busy) { leave_all(); g_block_until = now + 0.3; return; }
     simulate(dt, w);
 }
 
-/* ---- ограничение скорости (слабое перемещение) ---- */
+/* ---- слабое перемещение и отмена прыжка при вставании ---- */
 static void (*o_uv)(void*, Vec3*, float, const void*);
 static void h_uv(void* self, Vec3* vel, float dt, const void* mi) {
     o_uv(self, vel, dt, mi);
-    if (!g_ready || g_state == S_NORMAL || self != g_pc || !vel) return;
+    if (!g_ready || self != g_pc || !vel) return;
+    if (!finite3(*vel)) return;
+    if (g_state == S_NORMAL) {
+        /* сразу после вставания прыжок заблокирован */
+        if (g_grounded && now_time() < g_block_until && vel->y > JUMP_VY) vel->y = 0;
+        return;
+    }
     float lim = (float)g_api->get_float(g_id, "speed_limit", 3.0);
-    float hx = vel->x, hz = vel->z;
-    float hl = sqrtf(hx * hx + hz * hz);
+    float hl = sqrtf(vel->x * vel->x + vel->z * vel->z);
     if (hl > lim && hl > 0.0001f) { float s = lim / hl; vel->x *= s; vel->z *= s; }
-}
-
-/* ---- прыжок: в обмякшем состоянии он только поднимает ---- */
-static int is_local_input(void* self) {
-    if (!g_pc) return 0;
-    g_inp_calls++;
-    if (self == g_inp_ptr) return g_inp_local;
-    g_inp_ptr = self;
-    void* a = root_of(self);
-    void* b = root_of(g_pc);
-    g_inp_local = (a && a == b);
-    if (g_inp_local) g_inp_matched = 1;
-    return g_inp_local;
-}
-
-static uint8_t jump_filter(void* self, uint8_t r, int press_event) {
-    if (!g_ready) return r;
-    int local = is_local_input(self);
-    /* если по корню совпадения нет вообще, считаем нашим любой ввод (одиночная игра) */
-    if (!local && !g_inp_matched && g_inp_calls > 200) {
-        local = 1;
-        if (!g_inp_warned) { g_inp_warned = 1; logmsg("Рэгдолл: ввод прыжка не привязан к медведю по корню, считаю любой ввод своим"); }
+    /* резкий толчок вверх с земли = нажат прыжок: встаём, а сам прыжок отменяем */
+    if (g_grounded && vel->y > JUMP_VY) {
+        vel->y = 0;
+        if (g_state == S_RAG) g_standup_req = 1;
+    } else if (g_state == S_GETUP && g_grounded && vel->y > 0.5f) {
+        vel->y = 0;
     }
-    if (!local) return r;
-    if (g_state != S_NORMAL) {
-        if (r && press_event && g_grounded && g_state == S_RAG) g_standup_req = 1;
-        return 0;
-    }
-    if (now_time() < g_block_until) return 0;
-    return r;
 }
-
-static uint8_t (*o_jp)(void*, const void*);
-static uint8_t h_jp(void* self, const void* mi) { return jump_filter(self, o_jp(self, mi), 1); }
-static uint8_t (*o_jpb)(void*, const void*);
-static uint8_t h_jpb(void* self, const void* mi) { return jump_filter(self, o_jpb(self, mi), 1); }
-static uint8_t (*o_jh)(void*, const void*);
-static uint8_t h_jh(void* self, const void* mi) { return jump_filter(self, o_jh(self, mi), 0); }
 
 static void (*o_update)(void*, const void*);
 static void h_update(void* self, const void* mi) {
@@ -358,11 +406,14 @@ static void h_update(void* self, const void* mi) {
     int mine = 1;
     if (m_is_local.code) mine = call_bool(m_is_local, pc);
     else if (!g_warned_local) { g_warned_local = 1; logmsg("Рэгдолл: IsLocalPlayer не найден"); }
-    if (mine) tick(self, pc);
+    if (!mine) return;
+    g_calls++;
+    if (self == g_owner) { g_owner_seen = g_calls; tick(self, pc); }
+    else if (g_owner == NULL || g_calls - g_owner_seen > 90) tick(self, pc); /* прежний владелец пропал */
 }
 
 /* Подписи нужных методов в лог: если что-то не совпадёт, по ним легко поправить мод */
-static void dump_sigs(const char* cls, const char* a, const char* b, const char* c, const char* d) {
+static void dump_sigs(const char* cls, const char* const* pats, int np) {
     void* k = bearite_find_class("", cls);
     if (!k || !c_get_methods) { logs3("Рэгдолл: класс %s не найден", cls, NULL, NULL); return; }
     void* it = NULL;
@@ -370,7 +421,9 @@ static void dump_sigs(const char* cls, const char* a, const char* b, const char*
     while ((m = c_get_methods(k, &it)) != NULL) {
         const char* nm = m_get_name_fn ? m_get_name_fn(m) : NULL;
         if (!nm) continue;
-        if (!(strstr(nm, a) || strstr(nm, b) || strstr(nm, c) || strstr(nm, d))) continue;
+        int hit = 0;
+        for (int i = 0; i < np; ++i) if (strstr(nm, pats[i])) hit = 1;
+        if (!hit) continue;
         char sig[200];
         size_t n = 0;
         uint32_t pc = m_param_count ? m_param_count(m) : 0;
@@ -386,11 +439,6 @@ static void dump_sigs(const char* cls, const char* a, const char* b, const char*
     }
 }
 
-static void hook_bool(const char* name, void* repl, void** orig) {
-    if (bearite_hook_method(g_api, g_id, "", "PlayerInputController", name, 0, repl, orig) != 0)
-        logs3("Рэгдолл: не удалось перехватить PlayerInputController.%s (смотри подписи выше)", name, NULL, NULL);
-}
-
 __attribute__((visibility("default")))
 void bearite_mod_init(const BeariteApi* api, const char* mod_id) {
     if (api->version != BEARITE_API_VERSION) return;
@@ -400,46 +448,4 @@ void bearite_mod_init(const BeariteApi* api, const char* mod_id) {
 
     il2_object_get_class = (void* (*)(void*))api->il2cpp_symbol("il2cpp_object_get_class");
     il2_class_get_field = (void* (*)(void*, const char*))api->il2cpp_symbol("il2cpp_class_get_field_from_name");
-    il2_field_get_value = (void (*)(void*, void*, void*))api->il2cpp_symbol("il2cpp_field_get_value");
-    il2_string_new = (void* (*)(const char*))api->il2cpp_symbol("il2cpp_string_new");
-    c_get_name = (const char* (*)(void*))api->il2cpp_symbol("il2cpp_class_get_name");
-    c_get_methods = (void* (*)(void*, void**))api->il2cpp_symbol("il2cpp_class_get_methods");
-    m_get_name_fn = (const char* (*)(void*))api->il2cpp_symbol("il2cpp_method_get_name");
-    m_param_count = (uint32_t (*)(void*))api->il2cpp_symbol("il2cpp_method_get_param_count");
-    m_param = (void* (*)(void*, uint32_t))api->il2cpp_symbol("il2cpp_method_get_param");
-    m_ret = (void* (*)(void*))api->il2cpp_symbol("il2cpp_method_get_return_type");
-    t_get_name = (char* (*)(void*))api->il2cpp_symbol("il2cpp_type_get_name");
-    (void)c_get_name;
-
-    m_find = find_m("UnityEngine", "Transform", "Find", 1);
-    m_get_lpos = find_m("UnityEngine", "Transform", "get_localPosition", 0);
-    m_set_lpos = find_m("UnityEngine", "Transform", "set_localPosition", 1);
-    m_get_lrot = find_m("UnityEngine", "Transform", "get_localRotation", 0);
-    m_set_lrot = find_m("UnityEngine", "Transform", "set_localRotation", 1);
-    m_get_pos = find_m("UnityEngine", "Transform", "get_position", 0);
-    m_inv_dir = find_m("UnityEngine", "Transform", "InverseTransformDirection", 1);
-    m_get_root = find_m("UnityEngine", "Transform", "get_root", 0);
-    m_set_enabled = find_m("UnityEngine", "Behaviour", "set_enabled", 1);
-    m_get_transform = find_m("UnityEngine", "Component", "get_transform", 0);
-    m_time = find_m("UnityEngine", "Time", "get_unscaledTime", 0);
-    m_is_local = find_m("", "PlayerBearController", "get_IsLocalPlayer", 0);
-    if (!m_is_local.code) m_is_local = find_m("", "PlayerBearController", "IsLocalPlayer", 0);
-    m_is_grounded = find_m("", "PlayerBearController", "IsGrounded", 0);
-    m_is_swim = find_m("", "PlayerBearController", "IsSwimmingUnderwater", 0);
-    m_in_vehicle = find_m("", "PlayerBearController", "IsInVehicle", 0);
-
-    dump_sigs("PlayerInputController", "Jump", "Jump", "Jump", "Jump");
-    dump_sigs("PlayerBearController", "IsGrounded", "IsSwimmingUnderwater", "IsInVehicle", "IsLocalPlayer");
-
-    int ok = m_find.code && m_get_lpos.code && m_set_lpos.code && m_get_lrot.code && m_set_lrot.code &&
-             m_get_pos.code && m_set_enabled.code && m_get_transform.code && m_is_grounded.code && il2_string_new;
-    logmsg(ok ? "Рэгдолл: все нужные методы найдены" : "Рэгдолл: НЕ все нужные методы найдены, пришли лог");
-    if (!m_inv_dir.code) logmsg("Рэгдолл: InverseTransformDirection не найден, гравитация конечностей будет упрощённой");
-    if (!m_get_root.code) logmsg("Рэгдолл: Transform.get_root не найден, привязка прыжка пойдёт через запасной путь");
-    if (!ok) return;
-
-    if (bearite_hook_method(api, g_id, "", "PlayerBearController", "UpdateVelocity", 2, (void*)h_uv, (void**)&o_uv) != 0)
-        logmsg("Рэгдолл: не удалось перехватить UpdateVelocity, слабого перемещения не будет");
-    hook_bool("IsJumpInputPressed", (void*)h_jp, (void**)&o_jp);
-    hook_bool("IsJumpInputPressedOrBuffered", (void*)h_jpb, (void**)&o_jpb);
-}
+    il2_field_get_value = (void (*)(void*, void*, void*))api->il2cpp
